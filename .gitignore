@@ -1,0 +1,5 @@
+results/
+test.ipynb
+.venv/
+vonMises_plasticity.py
+.vscode/
