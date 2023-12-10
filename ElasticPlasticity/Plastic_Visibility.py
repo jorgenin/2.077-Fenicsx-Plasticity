@@ -121,3 +121,6 @@ class Problem_Saver:
         self.e_p_vis.interpolate(self.e_p_expr)
         self.Mises_vis.interpolate(self.Mises_expr)
         self.vtk.write(t)
+
+    def close(self):
+        self.vtk.close()

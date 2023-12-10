@@ -36,6 +36,7 @@ from ufl import (
     TestFunction,
     indices,
     as_tensor,
+    ge,
 )
 from basix.ufl import element, mixed_element, quadrature_element
 from datetime import datetime
@@ -135,9 +136,9 @@ class Plastic_Problem_Def:
         self.dp = Function(self.W_scal, name="Delta_plasticity")
 
         self.Y = Function(self.W_scal, name="Isotropic_Hardening")
-        self.A = Function(self.W_scal, name="Kinematic_Hardening")
+        self.A_internal = Function(self.W, name="Kinematic_Hardening")
 
-        self.Y.interpolate(lambda x: np.full_like(x[0], self.mech["sig0"]))
+        self.Y.interpolate(lambda x: np.full_like(x[0], self.mat.sig0))
 
         self.v = TestFunction(self.V)  # Function we are testing with
         self.du_ = TrialFunction(self.V)  # Function we are solving for
@@ -146,10 +147,9 @@ class Plastic_Problem_Def:
         self.e_pv = TestFunction(self.W_scal)
 
     def _init_linear_problem(self, bc_neumann: list = None):
-        E_n = eps(self.u)
-        del_E_n = eps(self.du_)
+        E_n = eps(self.u + self.du_)
         E_p_tensor = as_3D_tensor(self.E_p)
-        E_e_trial = E_n - E_p_tensor + del_E_n  # Trial Elastic Strain
+        E_e_trial = E_n - E_p_tensor  # Trial Elastic Strain
 
         T_trial = self.mat.sigma(E_e_trial)  # Trial cauchy stress
         # bilinear Part to solve for du Incrementally
@@ -167,27 +167,40 @@ class Plastic_Problem_Def:
     def _init_nonlinear_problem(
         self, bc_neumann: list[tuple[ufl.Form, ufl.Measure]] = None
     ):
-        E_n = eps(self.u)
+        E_n = eps(self.u + self.du)
         E_p_tensor = as_3D_tensor(self.E_p)
-        del_E = eps(self.du)
-        E_e_trial_plastic = (
-            E_n - E_p_tensor + del_E
-        )  # Trial Elastic Strain for plastic step
+        E_e_trial_plastic = E_n - E_p_tensor  # Trial Elastic Strain for plastic step
 
         T_trial_p = self.mat.sigma(E_e_trial_plastic)
+        back_stress = as_3D_tensor(self.A_internal) * self.mat.C
+        stress_eff = dev(T_trial_p) - back_stress
+        sigma_vm_trial = normVM(stress_eff)
 
-        sigma_vm_trial = normVM(T_trial_p)  # Trial Von Mises Stress
+        self.N_p = sqrt(3 / 2) * stress_eff / sigma_vm_trial
+
         f_trial = sigma_vm_trial - self.Y  # Trial Yield Function
 
-        Phi = sigma_vm_trial - 3 * self.mat.mu * self.dp - self.Y - self.Y_dot(self.dp)
+        dE_p = self.N_p * self.dp * sqrt(3 / 2)
+        dA_p = dE_p - self.mat.gamma * as_3D_tensor(self.A_internal) * self.dp
+
+        # Change in stress based on delta plasticity
+        delta_stress = dev(self.mat.sigma(E_e_trial_plastic - dE_p)) - self.mat.C * (
+            as_3D_tensor(self.A_internal) + dA_p
+        )
+
+        # This will need to equal zero for plasticity to hold
+        Phi = normVM(delta_stress) - self.Y - self.Y_dot(self.dp)
+        # Phi = sigma_vm_trial - 3 * self.mat.mu * self.dp - self.Y - self.Y_dot(self.dp)
+
         Phi_cond = conditional(gt(f_trial, 0), Phi, self.dp)  # Plastic multiplier
 
         self.res_p = inner(Phi_cond, self.e_pv) * self.dx
 
         if bc_neumann is not None:
             for boundary_condition in bc_neumann:
-                F += ufl.inner(boundary_condition[0], self.v) * boundary_condition[1]
-        self.N_p = dev(T_trial_p) / sigma_vm_trial
+                self.res_p += (
+                    ufl.inner(boundary_condition[0], self.v) * boundary_condition[1]
+                )
 
         self.Jacobian = derivative(self.res_p, self.dp, self.e_p_)
 
@@ -202,6 +215,7 @@ class Plastic_Problem_Def:
         --------
             Function: Derivative of the isotropic hardening function.
         """
+
         H_val = self.mat.H_0 * (1 - self.Y / self.mat.Y_s) ** self.mat.r
         return H_val * e_p
 
@@ -247,9 +261,11 @@ class Plastic_Problem_Def:
         self.linear_solver.solve(self.b, self.du.vector)
 
     def init_non_linear_solver(self, bcs=None):
-        problem = NonlinearProblem(self.res_p, self.dp, [bcs], self.Jacobian)
+        if bcs is None:
+            bcs = []
+        problem = NonlinearProblem(self.res_p, self.dp, bcs, self.Jacobian)
         self.nls_solver = NewtonSolver(MPI.COMM_WORLD, problem)
-        # nls_solver.convergence_criterion = "incremental"
+        self.nls_solver.convergence_criterion = "incremental"
         self.nls_solver.rtol = 1e-8
         self.nls_solver.atol = 1e-8
         self.nls_solver.max_it = 50
@@ -261,27 +277,42 @@ class Plastic_Problem_Def:
         option_prefix = ksp.getOptionsPrefix()
         opts[f"{option_prefix}ksp_type"] = "preonly"
         opts[f"{option_prefix}pc_type"] = "lu"
-        # opts[f"{option_prefix}pc_hypre_type"] = "boomeramg"
-        # opts[f"{option_prefix}pc_factor_mat_solver_type"] = "superlu_dist"
+        opts[f"{option_prefix}pc_factor_mat_solver_type"] = "mumps"
         opts[f"{option_prefix}ksp_max_it"] = 50
         ksp.setFromOptions()
 
     def solve_nls(self, bcs=None):
         self.nls_solver.solve(self.dp)
+
+        vec1 = fem.assemble_vector(fem.form(self.res_p))
+
+        print(f"Residual: {vec1.norm()}")
         # Do updates
+
         e_p_exp = Expression(
             self.e_p + self.dp, self.W_scal.element.interpolation_points()
         )
         self.e_p.interpolate(e_p_exp)
 
-        E_p_expr = Expression(
-            self.E_p + tensor_to_vector(self.N_p * self.dp * sqrt(3 / 2)),
-            self.W.element.interpolation_points(),
-        )
-
-        self.E_p.interpolate(E_p_expr)
+        d_E_p = self.N_p * self.dp * sqrt(3 / 2)
 
         Y_exp = Expression(
             self.Y + self.Y_dot(self.dp), self.W_scal.element.interpolation_points()
         )
         self.Y.interpolate(Y_exp)
+
+        dt_A = d_E_p - self.mat.gamma * as_3D_tensor(self.A_internal) * self.dp
+
+        A_expr = Expression(
+            tensor_to_vector(dt_A) + self.A_internal,
+            self.W.element.interpolation_points(),
+        )
+
+        self.A_internal.interpolate(A_expr)
+
+        E_p_expr = Expression(
+            self.E_p + tensor_to_vector(d_E_p),
+            self.W.element.interpolation_points(),
+        )
+
+        self.E_p.interpolate(E_p_expr)

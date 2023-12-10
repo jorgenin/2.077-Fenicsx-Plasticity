@@ -96,7 +96,7 @@ def tensor_to_vector(X):
     return ufl.as_vector([X[0, 0], X[1, 1], X[2, 2], X[0, 1], X[0, 2], X[1, 2]])
 
 
-def get_point(func: Function, x: float, y: float, z: float = 0):
+def get_point(func: Function, x: float, y: float, zs: float = 0):
     """
     Returns the value of a function at a given point.
 
