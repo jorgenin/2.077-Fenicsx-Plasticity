@@ -3,7 +3,7 @@ Implementation of Plasticity in Fenicsx
 
 This is an implementation of Plasticity based upon Prof. Anand's 2.073 class notes for a 2.077 project
 
-We hope to extend this to have a full finite elsasticity for large deformations, but frist version is based upson just small deformations.
+We hope to extend this to have a full finite elsasticity for large deformations, but the first version is based upson just small deformations.
 
 
 ## Structure
