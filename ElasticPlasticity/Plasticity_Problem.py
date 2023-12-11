@@ -130,8 +130,8 @@ class Plastic_Problem_Def:
         # Initialize the problem
 
         # interpolating into Y
-        self.Y.interpolate(lambda x: np.full_like(x[0], self.mat.sig0))
-        self.Y0.interpolate(lambda x: np.full_like(x[0], self.mat.sig0))
+        self.Y.x.array[:] = self.mat.sig0
+        self.Y0.x.array[:] = self.mat.sig0
 
     def init_nonlinear_problem(
         self, bc_neumann: list[tuple[ufl.Form, ufl.Measure]] = None
@@ -187,7 +187,7 @@ class Plastic_Problem_Def:
         Res_4 = inner(A_dot - d_E_p + self.mat.gamma * A * e_p, A_test) * self.dx
 
         self.Res = (
-            Res_1 + inner(Y, Y_test) * self.dx + inner(A, A_test) * self.dx
+            Res_1 + inner(d_Y, Y_test) * self.dx + inner(A, A_test) * self.dx
         ) + Res_3
 
         self.jac = derivative(self.Res, self.W, W_trial)
