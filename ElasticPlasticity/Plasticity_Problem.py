@@ -172,10 +172,16 @@ class Plastic_Problem_Def:
         stress_eff = dev(T_trial_p) - back_stress
         sigma_vm_trial = normVM(stress_eff)
 
-        self.N_p = sqrt(3 / 2) * stress_eff / sigma_vm_trial
+        N_tr = sqrt(3 / 2) * stress_eff / sigma_vm_trial
 
         f_trial = sigma_vm_trial - self.Y  # Trial Yield Function
 
+        dir_vec = (
+            sqrt(2 / 3) * N_tr * sigma_vm_trial
+            + self.mat.C * self.mat.gamma * self.dp * self.A_internal
+        )
+
+        self.N_p = dir_vec / sqrt(inner(dir_vec, dir_vec))
         dE_p = self.N_p * self.dp * sqrt(3 / 2)
         dA_p = dE_p - self.mat.gamma * self.A_internal * self.dp
 
@@ -185,9 +191,19 @@ class Plastic_Problem_Def:
         )
 
         # This will need to equal zero for plasticity to hold
-        Phi = normVM(delta_stress) - self.Y - self.Y_dot(self.dp)
+        # Phi = normVM(delta_stress) - self.Y - self.Y_dot(self.dp)
         # Phi = sigma_vm_trial - 3 * self.mat.mu * self.dp - self.Y - self.Y_dot(self.dp)
 
+        stress_eff_n1 = self.Y + self.Y_dot(self.dp)
+        Phi = (
+            sqrt(2 / 3) * sigma_vm_trial * N_tr
+            + self.mat.C * self.mat.gamma * self.dp * self.A_internal
+            - sqrt(2 / 3)
+            * self.N_p
+            * (stress_eff_n1 + 1.5 * self.mat.C * self.dp + 3 * self.mat.mu * self.dp)
+        )
+
+        Phi = inner(self.N_p, Phi)
         Phi_cond = conditional(gt(f_trial, 0), Phi, self.dp)  # Plastic multiplier
 
         self.res_p = inner(Phi_cond, self.e_pv) * self.dx
