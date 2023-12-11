@@ -1,5 +1,6 @@
 from ast import List
 from typing import Dict
+from matplotlib.pylab import beta
 from ufl.tensors import ComponentTensor
 import numpy as np
 
@@ -7,7 +8,7 @@ import dolfinx
 
 from mpi4py import MPI
 from petsc4py import PETSc
-
+import basix.ufl
 from dolfinx import fem, mesh, io, plot, log, default_scalar_type
 from dolfinx.fem import Constant, dirichletbc, Function, functionspace, Expression
 from dolfinx.fem.petsc import NonlinearProblem, LinearProblem
@@ -15,9 +16,11 @@ from dolfinx.nls.petsc import NewtonSolver
 from dolfinx.io import XDMFFile, VTXWriter
 import ufl
 from ufl import (
+    Jacobian,
     TestFunctions,
     TrialFunction,
     Identity,
+    eq,
     grad,
     det,
     div,
@@ -99,134 +102,95 @@ class Plastic_Problem_Def:
         self._create_funcs_spaces()
         self._create_funcs()
 
-        self._init_linear_problem()
-        self._init_nonlinear_problem()
-
-        self.init_linear_solver()
-        self.init_non_linear_solver()
-
     def _create_funcs_spaces(self):
         self.Ve = element(
             "Lagrange", self.domain.basix_cell(), self.deg_u, shape=(3,)
         )  # 2 degrees  of freedom
-        self.V = functionspace(self.domain, self.Ve)
-
-        self.Ve_scal = element("Lagrange", self.domain.basix_cell(), self.deg_u)
-        self.V_scal = functionspace(self.domain, self.Ve_scal)
 
         self.We = quadrature_element(
             self.domain.basix_cell(),
-            value_shape=(6,),
             degree=self.deg_stress,
             scheme="default",
         )
-        self.W = functionspace(self.domain, self.We)
 
-        self.W_scal_e = quadrature_element(
-            self.domain.basix_cell(), degree=self.deg_stress, scheme="default"
+        self.W_block_ele = basix.ufl.blocked_element(
+            self.We, shape=(3, 3), symmetry=True
         )
-        self.W_scal = functionspace(self.domain, self.W_scal_e)
+
+        self.ME = mixed_element([self.Ve, self.W_block_ele, self.We, self.W_block_ele])
+
+        self.W_space = functionspace(self.domain, self.ME)
 
     def _create_funcs(self):
-        self.E_p = Function(self.W, name="Total_Plastic_Strain")
-        self.e_p = Function(self.W_scal, name="Equivalent_Plastic_Strain")
-        self.u = Function(self.V, name="Total_displacement")
-        self.du = Function(self.V, name="Trial_displacement")
+        self.W = Function(self.W_space, name="W")
+        self.W0 = Function(self.W_space, name="W0")
+        self.u, self.E_p, self.Y, self.A = self.W.split()
+        self.u0, self.E_p0, self.Y0, self.A0 = self.W0.split()
 
-        self.dp = Function(self.W_scal, name="Delta_plasticity")
+        # Initialize the problem
 
-        self.Y = Function(self.W_scal, name="Isotropic_Hardening")
-        self.A_internal = Function(self.W, name="Kinematic_Hardening")
-
+        # interpolating into Y
         self.Y.interpolate(lambda x: np.full_like(x[0], self.mat.sig0))
+        self.Y0.interpolate(lambda x: np.full_like(x[0], self.mat.sig0))
 
-        self.v = TestFunction(self.V)  # Function we are testing with
-        self.du_ = TrialFunction(self.V)  # Function we are solving for
-
-        self.e_p_ = TrialFunction(self.W_scal)
-        self.e_pv = TestFunction(self.W_scal)
-
-    def _init_linear_problem(self, bc_neumann: list = None):
-        E_n = eps(self.u + self.du_)
-        E_p_tensor = as_3D_tensor(self.E_p)
-        E_e_trial = E_n - E_p_tensor  # Trial Elastic Strain
-        T_trial = self.mat.sigma(E_e_trial)  # Trial cauchy stress
-        # bilinear Part to solve for du Incrementally
-        # This is the linear part (In total this will be 0)
-        F_body = Constant(self.domain, np.array((0.0, 0.0, 0.0)))
-
-        F = (
-            ufl.inner(T_trial, eps(self.v)) * self.dx
-            - ufl.inner(F_body, self.v) * self.dx
-        )
-
-        if bc_neumann is not None:
-            for boundary_condition in bc_neumann:
-                F += (
-                    ufl.inner(boundary_condition[0], eps(self.v))
-                    * boundary_condition[1]
-                )
-
-        self.a_du, self.L_du = fem.form(ufl.lhs(F)), fem.form(ufl.rhs(F))
-
-    def _init_nonlinear_problem(
+    def init_nonlinear_problem(
         self, bc_neumann: list[tuple[ufl.Form, ufl.Measure]] = None
     ):
-        E_n = eps(self.u)
+        u_test, E_p_test, Y_test, A_test = TestFunctions(
+            self.W_space
+        )  # Function we are testing with
 
-        E_dot = eps(self.du)
-        E_p_tensor = as_3D_tensor(self.E_p)
-        E_e_trial_plastic = (
-            E_n - E_p_tensor + E_dot
-        )  # Trial Elastic Strain for plastic step
-        A_tensor = as_3D_tensor(self.A_internal)
+        W_trial = TrialFunction(self.W_space)
+        u, E_p, Y, A = ufl.split(self.W)
+        u0, E_p0, Y0, A0 = ufl.split(self.W0)
 
-        T_trial_p = self.mat.sigma(E_e_trial_plastic)
+        E = eps(u)
+        E0 = eps(u0)
 
-        back_stress = A_tensor * self.mat.C
+        E_e = E - E_p  # elastic stress
 
-        stress_eff = dev(T_trial_p) - back_stress
-        sigma_vm_trial = normVM(stress_eff)
+        Stress = self.mat.sigma(E_e)
 
-        N_tr = sqrt(3 / 2) * stress_eff / sigma_vm_trial
-
-        f_trial = sigma_vm_trial - self.Y  # Trial Yield Function
-
-        # Change in stress based on delta plasticity
-        # Equation for Update
-        dir_vec = (
-            sqrt(2 / 3) * N_tr * sigma_vm_trial
-            + self.mat.C * self.mat.gamma * self.dp * A_tensor
+        d_E_p = E_p - E_p0  # difference in E_p
+        E_dot = E - E0  # difference in E
+        Stress_eff = dev(Stress) - self.mat.C * A
+        Stress_VM = normVM(Stress_eff)
+        N_p = conditional(
+            eq(Stress_VM, 0), 0 * Stress_eff, sqrt(3 / 2) * Stress_eff / Stress_VM
         )
 
-        # Plastic Deformation direction with new update
-        self.N_p = dir_vec / sqrt(inner(dir_vec, dir_vec))
+        f = Stress_VM - Y  # Relation
 
-        stress_eff_n1 = self.Y + self.Y_dot(self.dp)
+        d_Y = Y - Y0  # change in Y
 
-        # This will need to equal zero for plasticity to hold
-        Phi = (
-            sqrt(2 / 3) * sigma_vm_trial * N_tr
-            + self.mat.C * self.mat.gamma * self.dp * A_tensor
-            - sqrt(2 / 3)
-            * self.N_p
-            * (stress_eff_n1 + 1.5 * self.mat.C * self.dp + 3 * self.mat.mu * self.dp)
+        e_p = sqrt(2 / 3) * sqrt(inner(d_E_p, d_E_p))
+
+        H = self.Y_dot(e_p) + self.mat.C * (
+            3 / 2 - sqrt(3 / 2) * self.mat.gamma * inner(A, N_p)
         )
 
-        Phi = inner(self.N_p, Phi)
-        # Phi = sigma_vm_trial - 3 * self.mat.mu * self.dp - self.Y - self.Y_dot(self.dp)
+        H = 0
+        Beta = 3 * self.mat.mu / (3 * self.mat.mu + H)
 
-        Phi_cond = conditional(gt(f_trial, 0), Phi, self.dp)  # Plastic multiplier
+        A_dot = A - A0
 
-        self.res_p = inner(Phi_cond, self.e_pv) * self.dx
+        chi = conditional(ge(f, 0), 1, 0)
 
-        if bc_neumann is not None:
-            for boundary_condition in bc_neumann:
-                self.res_p += (
-                    ufl.inner(boundary_condition[0], self.v) * boundary_condition[1]
-                )
+        Res_1 = inner(Stress, eps(u_test)) * self.dx  # Stress Relation
+        Res_2 = (
+            inner(d_Y - self.Y_dot(e_p), Y_test) * self.dx
+        )  # Isotropic Hardening Relation
+        Res_3 = (
+            inner(d_E_p - chi * Beta * inner(N_p, E_dot) * N_p, E_p_test) * self.dx
+        )  # Change in plastic strain
 
-        self.Jacobian = derivative(self.res_p, self.dp, self.e_p_)
+        Res_4 = inner(A_dot - d_E_p + self.mat.gamma * A * e_p, A_test) * self.dx
+
+        self.Res = (
+            Res_1 + inner(Y, Y_test) * self.dx + inner(A, A_test) * self.dx
+        ) + Res_3
+
+        self.jac = derivative(self.Res, self.W, W_trial)
 
     def Y_dot(self, e_p: Function) -> Function:
         """Returns the derivative of the isotropic hardening function.
@@ -243,51 +207,10 @@ class Plastic_Problem_Def:
         H_val = self.mat.H_0 * (1 - self.Y / self.mat.Y_s) ** self.mat.r
         return H_val * e_p
 
-    def init_linear_solver(self):
-        """Initializes the linear solver.
-
-        Parameters:
-        -----------
-            bcs (List): List of boundary conditions.
-        """
-        self.A = assemble_matrix(self.a_du)
-        self.A.assemble()
-        self.b = create_vector(self.L_du)
-
-        self.linear_solver = PETSc.KSP().create(self.domain.comm)
-        self.linear_solver.setOperators(self.A)
-        self.linear_solver.setType(PETSc.KSP.Type.PREONLY)
-        self.linear_solver.getPC().setType(PETSc.PC.Type.LU)
-
-    def solve_linear(self, bcs=None):
-        """Solves the linear problem.
-
-        Parameters:
-        -----------
-            bcs (List): List of boundary conditions.
-
-        Returns:
-        --------
-            Function: Displacement function.
-        """
-        with self.b.localForm() as loc_L:
-            loc_L.set(0)
-        self.A.zeroEntries()
-        assemble_matrix(self.A, self.a_du, bcs=bcs)
-        self.A.assemble()
-        assemble_vector(self.b, self.L_du)
-
-        self.b.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
-        apply_lifting(self.b, [self.a_du], [bcs], [self.u.vector], scale=1)
-
-        set_bc(self.b, bcs, self.u.vector)
-
-        self.linear_solver.solve(self.b, self.du.vector)
-
     def init_non_linear_solver(self, bcs=None):
         if bcs is None:
             bcs = []
-        problem = NonlinearProblem(self.res_p, self.dp, bcs, self.Jacobian)
+        problem = NonlinearProblem(self.Res, self.W, bcs, self.jac)
         self.nls_solver = NewtonSolver(MPI.COMM_WORLD, problem)
         self.nls_solver.convergence_criterion = "incremental"
         self.nls_solver.rtol = 1e-8
@@ -305,38 +228,12 @@ class Plastic_Problem_Def:
         opts[f"{option_prefix}ksp_max_it"] = 50
         ksp.setFromOptions()
 
-    def solve_nls(self, bcs=None):
-        self.nls_solver.solve(self.dp)
+    def solve_nls(self):
+        self.nls_solver.solve(self.W)
 
-        vec1 = fem.assemble_vector(fem.form(self.res_p))
+        vec1 = fem.assemble_vector(fem.form(self.Res))
 
         print(f"Residual: {vec1.norm()}")
         # Do updates
-
-        e_p_exp = Expression(
-            self.e_p + self.dp, self.W_scal.element.interpolation_points()
-        )
-        self.e_p.interpolate(e_p_exp)
-
-        d_E_p = self.N_p * self.dp * sqrt(3 / 2)
-
-        E_p_expr = Expression(
-            self.E_p + tensor_to_vector(d_E_p),
-            self.W.element.interpolation_points(),
-        )
-
-        self.E_p.interpolate(E_p_expr)
-
-        Y_exp = Expression(
-            self.Y + self.Y_dot(self.dp), self.W_scal.element.interpolation_points()
-        )
-        self.Y.interpolate(Y_exp)
-
-        dt_A = d_E_p - self.mat.gamma * as_3D_tensor(self.A_internal) * self.dp
-
-        A_expr = Expression(
-            self.A_internal + tensor_to_vector(dt_A),
-            self.W.element.interpolation_points(),
-        )
-
-        self.A_internal.interpolate(A_expr)
+        self.W.x.scatter_forward()
+        self.W0.x.array[:] = self.W.x.array
