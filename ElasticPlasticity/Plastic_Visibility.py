@@ -72,7 +72,7 @@ class Problem_Saver:
         V1 = fem.functionspace(problem.domain, U1)  # Scalar function space
 
         E_n = eps(problem.u)
-        E_p_tensor = as_3D_tensor(problem.E_p)
+        E_p_tensor = problem.E_p
         E_e_trial_plastic = E_n - E_p_tensor
         T = problem.mat.sigma(E_e_trial_plastic)
 

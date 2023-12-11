@@ -51,6 +51,7 @@ from dolfinx.fem.petsc import (
     create_vector,
 )
 import basix
+import basix.ufl
 
 from ElasticPlasticity.Plasticity_Funcs import (
     eps,
@@ -114,18 +115,13 @@ class Plastic_Problem_Def:
         self.Ve_scal = element("Lagrange", self.domain.basix_cell(), self.deg_u)
         self.V_scal = functionspace(self.domain, self.Ve_scal)
 
-        self.We = quadrature_element(
-            self.domain.basix_cell(),
-            value_shape=(6,),
-            degree=self.deg_stress,
-            scheme="default",
-        )
-        self.W = functionspace(self.domain, self.We)
-
         self.W_scal_e = quadrature_element(
             self.domain.basix_cell(), degree=self.deg_stress, scheme="default"
         )
         self.W_scal = functionspace(self.domain, self.W_scal_e)
+
+        self.We = basix.ufl.blocked_element(self.W_scal_e, shape=(3, 3), symmetry=True)
+        self.W = functionspace(self.domain, self.We)
 
     def _create_funcs(self):
         self.E_p = Function(self.W, name="Total_Plastic_Strain")
@@ -148,7 +144,7 @@ class Plastic_Problem_Def:
 
     def _init_linear_problem(self, bc_neumann: list = None):
         E_n = eps(self.u + self.du_)
-        E_p_tensor = as_3D_tensor(self.E_p)
+        E_p_tensor = self.E_p
         E_e_trial = E_n - E_p_tensor  # Trial Elastic Strain
 
         T_trial = self.mat.sigma(E_e_trial)  # Trial cauchy stress
@@ -168,11 +164,11 @@ class Plastic_Problem_Def:
         self, bc_neumann: list[tuple[ufl.Form, ufl.Measure]] = None
     ):
         E_n = eps(self.u + self.du)
-        E_p_tensor = as_3D_tensor(self.E_p)
+        E_p_tensor = self.E_p
         E_e_trial_plastic = E_n - E_p_tensor  # Trial Elastic Strain for plastic step
 
         T_trial_p = self.mat.sigma(E_e_trial_plastic)
-        back_stress = as_3D_tensor(self.A_internal) * self.mat.C
+        back_stress = self.A_internal * self.mat.C
         stress_eff = dev(T_trial_p) - back_stress
         sigma_vm_trial = normVM(stress_eff)
 
@@ -181,11 +177,11 @@ class Plastic_Problem_Def:
         f_trial = sigma_vm_trial - self.Y  # Trial Yield Function
 
         dE_p = self.N_p * self.dp * sqrt(3 / 2)
-        dA_p = dE_p - self.mat.gamma * as_3D_tensor(self.A_internal) * self.dp
+        dA_p = dE_p - self.mat.gamma * self.A_internal * self.dp
 
         # Change in stress based on delta plasticity
         delta_stress = dev(self.mat.sigma(E_e_trial_plastic - dE_p)) - self.mat.C * (
-            as_3D_tensor(self.A_internal) + dA_p
+            self.A_internal + dA_p
         )
 
         # This will need to equal zero for plasticity to hold
@@ -301,17 +297,17 @@ class Plastic_Problem_Def:
         )
         self.Y.interpolate(Y_exp)
 
-        dt_A = d_E_p - self.mat.gamma * as_3D_tensor(self.A_internal) * self.dp
+        dt_A = d_E_p - self.mat.gamma * self.A_internal * self.dp
 
         A_expr = Expression(
-            tensor_to_vector(dt_A) + self.A_internal,
+            dt_A + self.A_internal,
             self.W.element.interpolation_points(),
         )
 
         self.A_internal.interpolate(A_expr)
 
         E_p_expr = Expression(
-            self.E_p + tensor_to_vector(d_E_p),
+            self.E_p + d_E_p,
             self.W.element.interpolation_points(),
         )
 
