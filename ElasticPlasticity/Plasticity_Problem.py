@@ -200,14 +200,16 @@ class Plastic_Problem_Def:
 
         stress_eff_n1 = self.Y + self.Y_dot(self.dp)
         Phi = (
-            sqrt(2 / 3) * sigma_vm_trial * N_tr
-            + self.mat.C * self.mat.gamma * self.dp * self.A_internal
-            - sqrt(2 / 3)
-            * self.N_p
-            * (stress_eff_n1 + 1.5 * self.mat.C * self.dp + 3 * self.mat.mu * self.dp)
+            sigma_vm_trial
+            + sqrt(3 / 2)
+            * self.mat.C
+            * self.mat.gamma
+            * self.dp
+            * inner(self.A_internal, N_tr)
+            - (stress_eff_n1 + 1.5 * self.mat.C * self.dp + 3 * self.mat.mu * self.dp)
         )
 
-        Phi = inner(self.N_p, Phi)
+        # Phi = inner(self.N_p, Phi)
         Phi_cond = conditional(gt(f_trial, 0), Phi, self.dp)  # Plastic multiplier
 
         self.res_p = inner(Phi_cond, self.e_pv) * self.dx
@@ -233,7 +235,7 @@ class Plastic_Problem_Def:
         """
 
         H_val = self.mat.H_0 * (1 - self.Y / self.mat.Y_s) ** self.mat.r
-        return H_val * e_p
+        return H_val * ufl.sign(e_p) * e_p
 
     def init_linear_solver(self):
         """Initializes the linear solver.
@@ -284,7 +286,7 @@ class Plastic_Problem_Def:
         self.nls_solver.convergence_criterion = "incremental"
         self.nls_solver.rtol = 1e-8
         self.nls_solver.atol = 1e-8
-        self.nls_solver.max_it = 50
+        self.nls_solver.max_it = 1000
         self.nls_solver.report = True
         self.nls_solver.relaxation_parameter = 1
 
@@ -304,20 +306,24 @@ class Plastic_Problem_Def:
 
         # print(f"Residual: {vec1.norm()}")
         # Do updates
-
+        self.dp.x.array[:] = (
+            ~(np.isclose(self.dp.x.array, 0, atol=1e-8)) * self.dp.x.array
+        )
         e_p_exp = Expression(
             self.e_p + self.dp, self.W_scal.element.interpolation_points()
         )
         self.e_p.interpolate(e_p_exp)
 
-        d_E_p = self.N_p * self.dp * sqrt(3 / 2)
+        d_E_p = self.N_p * ufl.sign(self.dp) * self.dp * sqrt(3 / 2)
 
         Y_exp = Expression(
             self.Y + self.Y_dot(self.dp), self.W_scal.element.interpolation_points()
         )
         self.Y.interpolate(Y_exp)
 
-        dt_A = d_E_p - self.mat.gamma * self.A_internal * self.dp
+        dt_A = d_E_p * ufl.sign(self.dp) - self.mat.gamma * self.A_internal * (
+            ufl.sign(self.dp) * self.dp
+        )
 
         E_p_expr = Expression(
             self.E_p + d_E_p,
