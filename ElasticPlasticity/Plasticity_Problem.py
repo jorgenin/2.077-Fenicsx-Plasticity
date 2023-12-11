@@ -150,46 +150,70 @@ class Plastic_Problem_Def:
         E_n = eps(self.u + self.du_)
         E_p_tensor = as_3D_tensor(self.E_p)
         E_e_trial = E_n - E_p_tensor  # Trial Elastic Strain
-
         T_trial = self.mat.sigma(E_e_trial)  # Trial cauchy stress
         # bilinear Part to solve for du Incrementally
         # This is the linear part (In total this will be 0)
         F_body = Constant(self.domain, np.array((0.0, 0.0, 0.0)))
 
-        F = ufl.inner(T_trial, eps(self.v)) * self.dx - ufl.inner(F_body, self.v) * dx
+        F = (
+            ufl.inner(T_trial, eps(self.v)) * self.dx
+            - ufl.inner(F_body, self.v) * self.dx
+        )
 
         if bc_neumann is not None:
             for boundary_condition in bc_neumann:
-                F += ufl.inner(boundary_condition[0], self.v) * boundary_condition[1]
+                F += (
+                    ufl.inner(boundary_condition[0], eps(self.v))
+                    * boundary_condition[1]
+                )
 
         self.a_du, self.L_du = fem.form(ufl.lhs(F)), fem.form(ufl.rhs(F))
 
     def _init_nonlinear_problem(
         self, bc_neumann: list[tuple[ufl.Form, ufl.Measure]] = None
     ):
-        E_n = eps(self.u + self.du)
+        E_n = eps(self.u)
+
+        E_dot = eps(self.du)
         E_p_tensor = as_3D_tensor(self.E_p)
-        E_e_trial_plastic = E_n - E_p_tensor  # Trial Elastic Strain for plastic step
+        E_e_trial_plastic = (
+            E_n - E_p_tensor + E_dot
+        )  # Trial Elastic Strain for plastic step
+        A_tensor = as_3D_tensor(self.A_internal)
 
         T_trial_p = self.mat.sigma(E_e_trial_plastic)
-        back_stress = as_3D_tensor(self.A_internal) * self.mat.C
+
+        back_stress = A_tensor * self.mat.C
+
         stress_eff = dev(T_trial_p) - back_stress
         sigma_vm_trial = normVM(stress_eff)
 
-        self.N_p = sqrt(3 / 2) * stress_eff / sigma_vm_trial
+        N_tr = sqrt(3 / 2) * stress_eff / sigma_vm_trial
 
         f_trial = sigma_vm_trial - self.Y  # Trial Yield Function
 
-        dE_p = self.N_p * self.dp * sqrt(3 / 2)
-        dA_p = dE_p - self.mat.gamma * as_3D_tensor(self.A_internal) * self.dp
-
         # Change in stress based on delta plasticity
-        delta_stress = dev(self.mat.sigma(E_e_trial_plastic - dE_p)) - self.mat.C * (
-            as_3D_tensor(self.A_internal) + dA_p
+        # Equation for Update
+        dir_vec = (
+            sqrt(2 / 3) * N_tr * sigma_vm_trial
+            + self.mat.C * self.mat.gamma * self.dp * A_tensor
         )
 
+        # Plastic Deformation direction with new update
+        self.N_p = dir_vec / sqrt(inner(dir_vec, dir_vec))
+
+        stress_eff_n1 = self.Y + self.Y_dot(self.dp)
+
         # This will need to equal zero for plasticity to hold
-        Phi = normVM(delta_stress) - self.Y - self.Y_dot(self.dp)
+        Phi = (
+            sqrt(2 / 3) * sigma_vm_trial * N_tr
+            + self.mat.C * self.mat.gamma * self.dp * A_tensor
+            - sqrt(2 / 3)
+            * self.N_p
+            * (stress_eff_n1 + 1.5 * self.mat.C * self.dp + 3 * self.mat.mu * self.dp)
+        )
+
+        Phi = inner(self.N_p, Phi)
         # Phi = sigma_vm_trial - 3 * self.mat.mu * self.dp - self.Y - self.Y_dot(self.dp)
 
         Phi_cond = conditional(gt(f_trial, 0), Phi, self.dp)  # Plastic multiplier
@@ -296,6 +320,13 @@ class Plastic_Problem_Def:
 
         d_E_p = self.N_p * self.dp * sqrt(3 / 2)
 
+        E_p_expr = Expression(
+            self.E_p + tensor_to_vector(d_E_p),
+            self.W.element.interpolation_points(),
+        )
+
+        self.E_p.interpolate(E_p_expr)
+
         Y_exp = Expression(
             self.Y + self.Y_dot(self.dp), self.W_scal.element.interpolation_points()
         )
@@ -304,15 +335,8 @@ class Plastic_Problem_Def:
         dt_A = d_E_p - self.mat.gamma * as_3D_tensor(self.A_internal) * self.dp
 
         A_expr = Expression(
-            tensor_to_vector(dt_A) + self.A_internal,
+            self.A_internal + tensor_to_vector(dt_A),
             self.W.element.interpolation_points(),
         )
 
         self.A_internal.interpolate(A_expr)
-
-        E_p_expr = Expression(
-            self.E_p + tensor_to_vector(d_E_p),
-            self.W.element.interpolation_points(),
-        )
-
-        self.E_p.interpolate(E_p_expr)
