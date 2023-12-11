@@ -161,6 +161,7 @@ class Plastic_Problem_Def:
             for boundary_condition in bc_neumann:
                 F += ufl.inner(boundary_condition[0], self.v) * boundary_condition[1]
 
+        self.F = F
         self.a_du, self.L_du = fem.form(ufl.lhs(F)), fem.form(ufl.rhs(F))
 
     def _init_nonlinear_problem(
