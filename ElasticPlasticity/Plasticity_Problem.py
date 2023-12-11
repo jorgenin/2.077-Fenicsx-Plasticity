@@ -152,7 +152,10 @@ class Plastic_Problem_Def:
         # This is the linear part (In total this will be 0)
         F_body = Constant(self.domain, np.array((0.0, 0.0, 0.0)))
 
-        F = ufl.inner(T_trial, eps(self.v)) * self.dx - ufl.inner(F_body, self.v) * dx
+        F = (
+            ufl.inner(T_trial, eps(self.v)) * self.dx
+            - ufl.inner(F_body, self.v) * self.dx
+        )
 
         if bc_neumann is not None:
             for boundary_condition in bc_neumann:
@@ -175,20 +178,20 @@ class Plastic_Problem_Def:
         N_tr = sqrt(3 / 2) * stress_eff / sigma_vm_trial
 
         f_trial = sigma_vm_trial - self.Y  # Trial Yield Function
-
+        self.f_trial = fem.form(dot(f_trial, self.e_pv) * self.dx)
         dir_vec = (
             sqrt(2 / 3) * N_tr * sigma_vm_trial
             + self.mat.C * self.mat.gamma * self.dp * self.A_internal
         )
 
         self.N_p = dir_vec / sqrt(inner(dir_vec, dir_vec))
-        dE_p = self.N_p * self.dp * sqrt(3 / 2)
-        dA_p = dE_p - self.mat.gamma * self.A_internal * self.dp
+        # dE_p = self.N_p * self.dp * sqrt(3 / 2)
+        # dA_p = dE_p - self.mat.gamma * self.A_internal * self.dp
 
         # Change in stress based on delta plasticity
-        delta_stress = dev(self.mat.sigma(E_e_trial_plastic - dE_p)) - self.mat.C * (
-            self.A_internal + dA_p
-        )
+        # delta_stress = dev(self.mat.sigma(E_e_trial_plastic - dE_p)) - self.mat.C * (
+        #     self.A_internal + dA_p
+        # )
 
         # This will need to equal zero for plasticity to hold
         # Phi = normVM(delta_stress) - self.Y - self.Y_dot(self.dp)
@@ -296,9 +299,9 @@ class Plastic_Problem_Def:
     def solve_nls(self, bcs=None):
         self.nls_solver.solve(self.dp)
 
-        vec1 = fem.assemble_vector(fem.form(self.res_p))
+        # vec1 = fem.assemble_vector(fem.form(self.res_p))
 
-        print(f"Residual: {vec1.norm()}")
+        # print(f"Residual: {vec1.norm()}")
         # Do updates
 
         e_p_exp = Expression(
@@ -315,16 +318,15 @@ class Plastic_Problem_Def:
 
         dt_A = d_E_p - self.mat.gamma * self.A_internal * self.dp
 
-        A_expr = Expression(
-            dt_A + self.A_internal,
-            self.W.element.interpolation_points(),
-        )
-
-        self.A_internal.interpolate(A_expr)
-
         E_p_expr = Expression(
             self.E_p + d_E_p,
             self.W.element.interpolation_points(),
         )
 
         self.E_p.interpolate(E_p_expr)
+        A_expr = Expression(
+            dt_A + self.A_internal,
+            self.W.element.interpolation_points(),
+        )
+
+        self.A_internal.interpolate(A_expr)
