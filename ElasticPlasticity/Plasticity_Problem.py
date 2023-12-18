@@ -97,7 +97,7 @@ class Plastic_Problem_Def:
         )
 
         self.deg_u = deg_u
-        self.deg_stress = deg_strain_quad
+        self.deg_strain_quad = deg_strain_quad
 
         self.facet_tags = facet_tags
         self._create_funcs_spaces()
@@ -119,7 +119,7 @@ class Plastic_Problem_Def:
         self.V_scal = functionspace(self.domain, self.Ve_scal)
 
         self.W_scal_e = quadrature_element(
-            self.domain.basix_cell(), degree=self.deg_stress, scheme="default"
+            self.domain.basix_cell(), degree=self.deg_strain_quad, scheme="default"
         )
         self.W_scal = functionspace(self.domain, self.W_scal_e)
 
