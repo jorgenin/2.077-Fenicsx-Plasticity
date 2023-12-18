@@ -19,6 +19,4 @@ RUN if [[ ${BUILDARCH} =~ "arm64" ]]; then \
 
 RUN pip3 install "pyvista[all,trame]"
 
-
-
-
+WORKDIR /home/project
