@@ -10,7 +10,6 @@ RUN apt-get update && apt-get clean && apt-get install -y \
 
 # Install python dependencies
 RUN pip3 install --upgrade pip
-RUN echo "Testing to see if this works ${BUILDARCH}"
 
 RUN if [[ ${BUILDARCH} =~ "arm64" ]]; then \ 
     echo "Test" && \
