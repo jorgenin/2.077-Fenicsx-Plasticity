@@ -72,7 +72,7 @@ class Plastic_Problem_Def:
         domain: mesh.Mesh,
         material: Plastic_Material,
         deg_u: int = 2,
-        deg_stress: int = 2,
+        deg_strain_quad: int = 2,
         facet_tags=None,
     ):
         self.domain = domain
@@ -83,18 +83,21 @@ class Plastic_Problem_Def:
         self.dx = ufl.Measure(
             "dx",
             domain=domain,
-            metadata={"quadrature_degree": deg_u, "quadrature_scheme": "default"},
+            metadata={
+                "quadrature_degree": deg_strain_quad,
+                "quadrature_scheme": "default",
+            },
         )
 
         self.ds = ufl.Measure(
             "ds",
             domain=domain,
             subdomain_data=facet_tags,
-            metadata={"quadrature_degree": deg_u},
+            metadata={"quadrature_degree": deg_strain_quad},
         )
 
         self.deg_u = deg_u
-        self.deg_stress = deg_stress
+        self.deg_stress = deg_strain_quad
 
         self.facet_tags = facet_tags
         self._create_funcs_spaces()
@@ -136,6 +139,8 @@ class Plastic_Problem_Def:
 
         self.Y.interpolate(lambda x: np.full_like(x[0], self.mat.sig0))
 
+        self.Temp = Function(self.W_scal, name="Temperature")
+        self.Temp.x.array[:] = 298.0
         self.v = TestFunction(self.V)  # Function we are testing with
         self.du_ = TrialFunction(self.V)  # Function we are solving for
 
