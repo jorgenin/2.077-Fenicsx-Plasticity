@@ -17,6 +17,7 @@ RUN if [[ ${BUILDARCH} =~ "arm64" ]]; then \
     fi
 
 
-RUN pip3 install "pyvista[all,trame]"
+RUN pip3 install "pyvista[all,trame]" jupyterlab ipython ipywidgets
 
 WORKDIR /home/project
+
