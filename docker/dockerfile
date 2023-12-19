@@ -1,4 +1,4 @@
-FROM dolfinx/dolfinx:v0.7.2
+FROM dolfinx/dolfinx:nightly
 ARG BUILDARCH
 SHELL ["/bin/bash", "-c"]
 LABEL maintainer="Jorge Nin <jorgenin@Mit.edu>"
