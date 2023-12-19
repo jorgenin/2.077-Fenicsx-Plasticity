@@ -1,0 +1,23 @@
+FROM dolfinx/dolfinx:v0.7.2
+ARG BUILDARCH
+SHELL ["/bin/bash", "-c"]
+LABEL maintainer="Jorge Nin <jorgenin@Mit.edu>"
+
+# Install dependencies
+RUN apt-get update && apt-get clean && apt-get install -y \
+    xvfb 
+
+
+# Install python dependencies
+RUN pip3 install --upgrade pip
+
+RUN if [[ ${BUILDARCH} =~ "arm64" ]]; then \ 
+    echo "Test" && \
+    pip3 install "https://github.com/finsberg/vtk-aarch64/releases/download/vtk-9.2.6-cp310/vtk-9.2.6.dev0-cp310-cp310-linux_aarch64.whl";\
+    fi
+
+
+RUN pip3 install "pyvista[all,trame]" jupyterlab ipython ipywidgets
+
+WORKDIR /home/project
+
