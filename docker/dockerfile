@@ -1,17 +1,17 @@
 FROM dolfinx/dolfinx:nightly
-ARG BUILDARCH
+ARG TARGETARCH
 SHELL ["/bin/bash", "-c"]
 LABEL maintainer="Jorge Nin <jorgenin@Mit.edu>"
 
 # Install dependencies
 RUN apt-get update && apt-get clean && apt-get install -y \
-    xvfb 
+    xvfb vim ffmpeg
 
 
 # Install python dependencies
 RUN pip3 install --upgrade pip
 
-RUN if [[ ${BUILDARCH} =~ "arm64" ]]; then \ 
+RUN if [[ ${TARGETARCH} =~ "arm64" ]]; then \ 
     echo "Test" && \
     pip3 install "https://github.com/finsberg/vtk-aarch64/releases/download/vtk-9.2.6-cp310/vtk-9.2.6.dev0-cp310-cp310-linux_aarch64.whl";\
     fi
