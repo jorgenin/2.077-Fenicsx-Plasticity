@@ -115,7 +115,7 @@ def get_point(func: Function, x: float, y: float, zs: float = 0):
     return func.eval([x, y, z])
 
 
-def project(v, target_func, bcs=[]):
+def project(v, target_func, bcs=[],dx_deg = 2 ):
     """Project UFL expression.
 
     Note
@@ -126,7 +126,7 @@ def project(v, target_func, bcs=[]):
 
     # Ensure we have a mesh and attach to measure
     V = target_func.function_space
-    dx = ufl.dx(V.mesh)
+    dx = ufl.dx(V.mesh, metadata={"quadrature_degree": dx_deg})
 
     # Define variational problem for projection
     w = ufl.TestFunction(V)

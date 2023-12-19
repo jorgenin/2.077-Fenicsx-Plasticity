@@ -58,6 +58,7 @@ from ElasticPlasticity.Plasticity_Funcs import (
     as_3D_tensor,
     normVM,
     tensor_to_vector,
+    project
 )
 
 from ElasticPlasticity.Plastic_material import Plastic_Material
@@ -118,9 +119,10 @@ class Plastic_Problem_Def:
         self.Ve_scal = element("Lagrange", self.domain.basix_cell(), self.deg_u)
         self.V_scal = functionspace(self.domain, self.Ve_scal)
 
-        self.W_scal_e = quadrature_element(
-            self.domain.basix_cell(), degree=self.deg_strain_quad, scheme="default"
-        )
+        # self.W_scal_e = quadrature_element(
+        #     self.domain.basix_cell(),value_shape=(1,1), degree=self.deg_strain_quad, scheme="default"
+        # )
+        self.W_scal_e = quadrature_element(self.domain.basix_cell(),value_shape=(), degree=self.deg_strain_quad,scheme="default")
         self.W_scal = functionspace(self.domain, self.W_scal_e)
 
         self.We = basix.ufl.blocked_element(self.W_scal_e, shape=(3, 3), symmetry=True)
@@ -137,10 +139,9 @@ class Plastic_Problem_Def:
         self.Y = Function(self.W_scal, name="Isotropic_Hardening")
         self.A_internal = Function(self.W, name="Kinematic_Hardening")
 
-        self.Y.interpolate(lambda x: np.full_like(x[0], self.mat.sig0))
+        #initialize values of Y
+        self.Y.x.array[:] = self.mat.sig0
 
-        self.Temp = Function(self.W_scal, name="Temperature")
-        self.Temp.x.array[:] = 298.0
         self.v = TestFunction(self.V)  # Function we are testing with
         self.du_ = TrialFunction(self.V)  # Function we are solving for
 
@@ -314,31 +315,19 @@ class Plastic_Problem_Def:
         self.dp.x.array[:] = (
             ~(np.isclose(self.dp.x.array, 0, atol=1e-8)) * self.dp.x.array
         )
-        e_p_exp = Expression(
-            self.e_p + self.dp, self.W_scal.element.interpolation_points()
-        )
-        self.e_p.interpolate(e_p_exp)
-
+        
+        
+        e_p_exp = self.e_p + self.dp
         d_E_p = self.N_p * ufl.sign(self.dp) * self.dp * sqrt(3 / 2)
-
-        Y_exp = Expression(
-            self.Y + self.Y_dot(self.dp), self.W_scal.element.interpolation_points()
-        )
-        self.Y.interpolate(Y_exp)
-
-        dt_A = d_E_p * ufl.sign(self.dp) - self.mat.gamma * self.A_internal * (
-            ufl.sign(self.dp) * self.dp
-        )
-
-        E_p_expr = Expression(
-            self.E_p + d_E_p,
-            self.W.element.interpolation_points(),
-        )
-
-        self.E_p.interpolate(E_p_expr)
-        A_expr = Expression(
-            dt_A + self.A_internal,
-            self.W.element.interpolation_points(),
-        )
-
-        self.A_internal.interpolate(A_expr)
+        dt_A = d_E_p  - self.mat.gamma * self.A_internal * (self.dp)
+        Y_exp = self.Y + self.Y_dot(self.dp)
+        
+        E_p_expr = self.E_p + d_E_p
+        A_expr = dt_A + self.A_internal
+        
+        
+        project(e_p_exp, self.e_p, dx_deg=self.deg_strain_quad)
+        project(Y_exp, self.Y , dx_deg=self.deg_strain_quad)
+        project(A_expr,  self.A_internal , dx_deg=self.deg_strain_quad)
+        project(E_p_expr, self.E_p  , dx_deg=self.deg_strain_quad)
+       
